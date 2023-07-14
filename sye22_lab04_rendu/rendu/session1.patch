@@ -1,0 +1,252 @@
+diff --git a/.vscode/settings.json b/.vscode/settings.json
+index f1d7ff1..7580409 100644
+--- a/.vscode/settings.json
++++ b/.vscode/settings.json
+@@ -7,6 +7,7 @@
+         "prefetch.h": "c",
+         "common.h": "c",
+         "processor.h": "c",
+-        "timer.h": "c"
++        "timer.h": "c",
++        "sstream": "c"
+     }
+ }
+\ No newline at end of file
+diff --git a/usr/src/socket_client.c b/usr/src/socket_client.c
+index 4391215..ba349a4 100644
+--- a/usr/src/socket_client.c
++++ b/usr/src/socket_client.c
+@@ -21,6 +21,8 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
++#include <ctype.h>
++#include <stdbool.h>
+ 
+ #include <arpa/inet.h>
+ #include <netinet/in.h>
+@@ -37,26 +39,124 @@ msg_idx_t message_to_send = 0;
+ 
+ /* A COMPLETER: Handlers des signaux */
+ 
++void process_siguser(int sig) {
++
++    switch(sig) {
++    case SIGUSR1:
++        printf("Handler USR1:  %d", sig);
++        message_to_send = GREETING;
++        break;
++    case SIGUSR2:
++        printf("Handler USR2: %d", sig);
++        message_to_send = COUNTING;
++        break;
++    default:
++        break;
++    }
++
++}
++
++void process_sigint(int sig) {
++
++    printf("Handler INT: %d", sig);
++    message_to_send = QUITING;
++}
++
+ int main(int argc, char **argv) {
+     /* A COMPLETER: Variables */
+     int running = 1;
++    int sockfd = 0, n = 0;
++    bool isHello = true;
++    struct sockaddr_in serv_addr; 
+ 
+     /* A COMPLETER: Traitement des arguments */
++    if(argc != 3) {
++        printf("\nUsage : %s <IP Address> <Port>\n", argv[0]);
++        return EXIT_FAILURE;
++    }
+ 
+-    /* A COMPLETER: Liens entre signaux et handlers */
+ 
++    /*
++        VERIFICATION DES PARAMS
++    */
++    printf("test-1\n");
++    serv_addr.sin_family = AF_INET;
++    serv_addr.sin_port = htons(atoi(argv[2])); 
++    printf("test0\n");
++    if (inet_pton(AF_INET, argv[1], &serv_addr.sin_addr)<=0)
++    {
++        printf("\n inet_pton error occured\n");
++        return EXIT_FAILURE;
++    } 
++    printf("test1\n");
++    /* A COMPLETER: Liens entre signaux et handlers */
++    signal(SIGUSR1, process_siguser);
++    signal(SIGUSR2, process_siguser);
++    signal(SIGINT, process_sigint);
++printf("test2\n");
+     /* A COMPLETER: Création du socket et connection au serveur */
+-
++    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
++    {
++        printf("\n Error : Could not create socket \n");
++        return EXIT_FAILURE;
++    } 
++printf("test3\n");
++    if (connect(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
++    {
++       printf("\n Error : Connect Failed \n");
++       return EXIT_FAILURE;
++    } 
++
++    //printf("Connetion to server at %s:%s... SUCCESS", argv[1], argv[2]);
++    printf("ougabouga");
+     while (running) {
++
+         /* buffer de reception */
+         char buffer[BUFFER_LEN];
+ 
++        /* buffer d'evnoi */
++        char bufferSend[BUFFER_LEN];
++
++
+         /* A COMPLETER: Préparation en envoi du message */
+         switch (message_to_send) {
++            case GREETING:
++                if(isHello) {
++                    snprintf(bufferSend, BUFFER_LEN, "%s", BONJOUR);
++                } else {
++                    snprintf(bufferSend, BUFFER_LEN, "%s", AUREVOIR);
++                }   
++                isHello = !isHello;
++                break;
++            case COUNTING:
++                snprintf(bufferSend, BUFFER_LEN, "%s", COMPTEUR);
++                break;
++            case QUITING:
++                snprintf(bufferSend, BUFFER_LEN, "%s", QUITTER);
++                running = 0;
++                break;
+         }
++        send(sockfd, bufferSend, BUFFER_LEN, 0);
+ 
+         /* A COMPLETER: Réception, si nécessaire de la réponse */
+         switch (message_to_send) {
++            case GREETING:
++            case COUNTING:
++                    while ((n = read(sockfd, buffer, sizeof(buffer)-1)) > 0)
++                    {
++                        buffer[n] = 0;
++                        if (fputs(buffer, stdout) == EOF)
++                        {
++                            running = 0;
++                            printf("\n Error : Fputs error\n");
++                            break;
++                        }
++                    } 
++                    printf("%s\n", buffer);
++            break;
++            case QUITING:
++			    running = 0;
++			break;
+         }
+ 
+         message_to_send = 0;
+@@ -64,5 +164,7 @@ int main(int argc, char **argv) {
+ 
+     /* A COMPLETER: Nettoyage des ressources */
+ 
++    close(sockfd);
++
+     return 0;
+ }
+diff --git a/usr/src/socket_server.c b/usr/src/socket_server.c
+index 6c5c895..2e49c45 100644
+--- a/usr/src/socket_server.c
++++ b/usr/src/socket_server.c
+@@ -25,26 +25,85 @@
+ 
+ #include "socket_sye.h"
+ 
++#define BUFFER_LEN  80
++
+ int main(int argc, char *argv[]) {
+ 
+     /* A COMPLETER: déclarations des variables */
+     int running = 1;
+     int counter = 0;
++    int n;
++    const int PORT = 5000;
++	const int MAX_CONNECTIONS = 10;
++
++    int listenfd = 0, connfd = 0;
++    struct sockaddr_in serv_addr;
++    char receiveBuff[BUFFER_LEN];
++    char sendBuff[BUFFER_LEN];
+ 
++    struct sockaddr_in client_addr; 
++    struct sockaddr_in* pV4Addr = (struct sockaddr_in*)&client_addr;
++    struct in_addr ipAddr = pV4Addr->sin_addr;
++    char clientAdr[INET_ADDRSTRLEN];
+ 
+     /* A COMPLETER: Mise en place du socket et connexion avec le client */
++    listenfd = socket(AF_INET, SOCK_STREAM, 0);
++    memset(&serv_addr, 0, sizeof(serv_addr));
++    memset(receiveBuff, 0, sizeof(receiveBuff)); 
++
++    serv_addr.sin_family = AF_INET;
++    serv_addr.sin_addr.s_addr = htonl(INADDR_ANY);
++    serv_addr.sin_port = htons(PORT); 
++
++    bind(listenfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)); 
+ 
++    listen(listenfd, MAX_CONNECTIONS);
++
++    printf("Waiting for clients...\n");
+ 
+     /* Boucle de traitement principal. C'est ici que la reception des message 
+         et l'envoi des réponses se fait. */
+     while (running) {
+         /* A COMPLETER: Reception et traitement des messages */
+ 
++        connfd = accept(listenfd, (struct sockaddr *) &client_addr, NULL); 
++
++        inet_ntop( AF_INET, &ipAddr, clientAdr, INET_ADDRSTRLEN );
++
++        printf("Client connected!\n");
++
++        n = read(connfd, receiveBuff, BUFFER_LEN);
++        if(n < 0) {
++            printf("Couldn't read data");
++            break;
++        }
++        receiveBuff[n] = '\0';
++
++        printf("The client said %s\n", receiveBuff);
++
++        if(!strcmp(receiveBuff, BONJOUR) ||!strcmp(receiveBuff, AUREVOIR)) {
++
++            snprintf(sendBuff, BUFFER_LEN, "%s client %s", receiveBuff, client_addr);
++
++        } else if(!strcmp(receiveBuff, COMPTEUR)) {
++
++            snprintf(sendBuff, BUFFER_LEN, "Valeur compteur %d", ++counter);
++
++        } else if(!strcmp(receiveBuff, QUITTER)) {
++            printf("The client asked for a disconnection, now quitting...\n");
++            break;
++        }
++        
++
+         /* A COMPLETER: Envoi de la réponse */
++
++        write(connfd, sendBuff, BUFFER_LEN);
+     }
+ 
+ 
+     /* A COMPLETER: Nettoyage des ressources*/
++    close(listenfd);
++	close(connfd);
+ 
+     return 0;
+ 

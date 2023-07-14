@@ -1,0 +1,70 @@
+diff --git a/so3/kernel/main.c b/so3/kernel/main.c
+index 38377a3..7167e02 100644
+--- a/so3/kernel/main.c
++++ b/so3/kernel/main.c
+@@ -128,8 +128,6 @@ void kernel_start(void) {
+ 
+ 	calibrate_delay();
+ 
+-	hidden_init();
+-
+ 	/*
+ 	 * Perform the rest of bootstrap sequence in a separate thread, so that
+ 	 * we can rely on the scheduler for subsequent threads.
+diff --git a/usr/src/CMakeLists.txt b/usr/src/CMakeLists.txt
+index e201639..eb364f6 100644
+--- a/usr/src/CMakeLists.txt
++++ b/usr/src/CMakeLists.txt
+@@ -4,6 +4,7 @@ add_executable(ls.elf ls.c)
+ add_executable(more.elf more.c)
+ add_executable(cat.elf cat.c)
+ add_executable(comp.elf comp.c)
++add_executable(hello.elf hello.c)
+ add_executable(echo.elf echo.c)
+ add_executable(ping.elf ping.c)
+ add_executable(threads.elf threads.c)
+@@ -13,6 +14,7 @@ target_link_libraries(sh.elf c)
+ target_link_libraries(ls.elf c)
+ target_link_libraries(more.elf c)
+ target_link_libraries(cat.elf c)
++target_link_libraries(hello.elf c)
+ target_link_libraries(comp.elf c)
+ target_link_libraries(echo.elf c)
+ target_link_libraries(ping.elf c)
+diff --git a/usr/src/hello.c b/usr/src/hello.c
+index 1ad962a..869321b 100644
+--- a/usr/src/hello.c
++++ b/usr/src/hello.c
+@@ -6,7 +6,18 @@
+ 
+ int main(int argc, char *argv[]) {
+ 
++    char* hello = "Hello World !\n";
+ 	printf("SO3 - Simple application\n");
+-    
++    printf("%s", hello);
++    printf("Adresse : %p", hello);
++
++    size_t taille = strlen(hello);
++
++    for(size_t i = 0; i < taille; i++) {
++
++        char* actuel = ((char*) 0xbffcef3cso3) + i * sizeof(char*);
++        ++(*actuel);
++    }
++
+     return 0;
+ }
+diff --git a/usr/src/sh.c b/usr/src/sh.c
+index a7066b2..7cabc55 100644
+--- a/usr/src/sh.c
++++ b/usr/src/sh.c
+@@ -252,8 +252,6 @@ void main(int argc, char *argv[])
+ 
+ 		gets(user_input);
+ 
+-		*ptr = 0xaabbcc;
+-
+ 		if (strcmp(user_input, ""))
+ 			parse_token(user_input);
+ 

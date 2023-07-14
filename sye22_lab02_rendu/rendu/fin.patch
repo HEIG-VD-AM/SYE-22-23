@@ -1,0 +1,449 @@
+diff --git a/.vscode/settings.json b/.vscode/settings.json
+index f1d7ff1..c38a343 100644
+--- a/.vscode/settings.json
++++ b/.vscode/settings.json
+@@ -7,6 +7,9 @@
+         "prefetch.h": "c",
+         "common.h": "c",
+         "processor.h": "c",
+-        "timer.h": "c"
++        "timer.h": "c",
++        "algorithm": "c",
++        "stdio.h": "c",
++        "string.h": "c"
+     }
+ }
+\ No newline at end of file
+diff --git a/rapport_lab02.md b/rapport_lab02.md
+index e69de29..8b91d21 100644
+--- a/rapport_lab02.md
++++ b/rapport_lab02.md
+@@ -0,0 +1,42 @@
++# Rajout d'un appel systène dabs SO3
++
++## Espace noyau
++
++### so3/include/syscall.h 
++Dans cette section, il faut ajouter une définition pour l'appel système. Cela revient à ajouter le nom de l'appel système, ainsi qu'un numéro qui le représente.
++
++    #define SYSCALL_FORK2 		88
++
++### so3/include/process.h 
++On ajoute la déclaration de la méthode "do_fork2". Celle-ci sera la méthode utilisée lorsque l'on voudra fork un process.
++
++    int do_fork2(void);
++
++### so3/kernel/process.c 
++Cette partie va de paire avec la précédente. C'est tout simplement la définition de la méthode "do_fork2". Nous avons repris la méthode "do_fork" qui était déjà implémentée et l'avons modifiée pour avoir un affichage personnalisé. Cette définition permettra lors de l'appel de la fonction de fork un process et d'afficher le message qui nous était indiqué dans la consigne. Ci-dessous la modification apportée à la méthode do_fork() de base.
++
++    printk("fork2(): process %s with pid %d forked to child with pid %d\n", parent->name, parent->pid, newp->pid);
++
++
++### so3/kernel/syscalls.c 
++Ici, il s'agit d'ajouter dans le switch notre appel système. Cet ajout permettra de faire le lien entre la définition de l'appel (son numéro) que l'on a défini dans syscall.h et la fonction qui est exécutée qui se trouve dans process.h et process.c.
++
++
++    case SYSCALL_FORK2:
++        result = do_fork2();
++        break;
++
++## Espace utilisateur
++
++### usr/lib/libc/include/syscall.h
++Ajout dans la partie utilisateur de l'appel système, ainsi que du numéro qui l'identifie. C'est la même tâche que l'on a fait dans le premier syscall.h.
++
++    #define syscallFork2 		    88
++
++### usr/lib/libc/crt0.S 
++Défintion du stub pour notre appel système. On définit quel est le mot à utiliser dans le code afin d'accéder à la fonctionnalité que l'on vient d'implémenter.
++
++    SYSCALLSTUB sys_fork2, 			syscallFork2
++
++## Synthèse
++Afin d'ajouter un appel système, il y a deux parties principales. On doit d'abord définir ce que notre appel système fait et réaliser son implémentation dans la partie noyau. Dans un second temps, il faut réaliser le lien avec la partie utilisateur. C'est-à-dire la partie du code qui va générer une interruption logiciel et qui est appelée le stub. Une fois ces deux parties réalisés, on peut utiliser notre nouvel appel. Lors de l'appel, on ira interagir avec la partie se situant dans l'espace utilisateur et ensuite le système redirigera vers l'espace noyau.
+\ No newline at end of file
+diff --git a/so3/include/process.h b/so3/include/process.h
+index dd9d656..8a814dc 100644
+--- a/so3/include/process.h
++++ b/so3/include/process.h
+@@ -138,6 +138,7 @@ uint32_t do_getpid(void);
+ 
+ int do_execve(const char *filename, char **argv, char **envp);
+ int do_fork(void);
++int do_fork2(void);
+ void do_exit(int exit_status);
+ int do_waitpid(int pid, uint32_t *wstatus, uint32_t options);
+ 
+diff --git a/so3/include/syscall.h b/so3/include/syscall.h
+index b81fd96..533a2a8 100644
+--- a/so3/include/syscall.h
++++ b/so3/include/syscall.h
+@@ -83,7 +83,7 @@
+ #define SYSCALL_NANOSLEEP	70
+ 
+ #define SYSCALL_PROCNAME	80
+-
++#define SYSCALL_FORK2 		88
+ #define SYSCALL_SYSINFO		99
+ 
+ #define SYSCALL_SETSOCKOPT	110
+diff --git a/so3/kernel/process.c b/so3/kernel/process.c
+index f404beb..5e7d968 100644
+--- a/so3/kernel/process.c
++++ b/so3/kernel/process.c
+@@ -839,6 +839,64 @@ int do_fork(void)
+ 	return newp->pid;
+ }
+ 
++int do_fork2(void)
++{
++	pcb_t *newp, *parent;
++	unsigned long flags;
++
++	flags = local_irq_save();
++
++	parent = current()->pcb;
++
++	/* For the time being, we *only* authorize to fork() from the main thread */
++	if (current() != parent->main_thread) {
++		printk("%s: forking from a thread other than the main thread is not allowed so far ...\n", __func__);
++		return -1;
++	}
++
++	/* Duplicate the elements of the parent process into the child */
++	newp = duplicate_process(parent);
++
++	/* Copy the user space area of the parent process */
++	duplicate_user_space(parent, newp);
++
++	/* At the moment, we spawn the main_thread only in the child. In the future, we will have to create a thread for each existing threads
++	 * in the parent process.
++	 */
++	sprintf(newp->name, "%s_child_%d", parent->name, newp->pid);
++
++	newp->main_thread = user_thread(NULL, newp->name, (void *) arch_get_args_base(), newp);
++
++	/* Copy the kernel stack of the main thread */
++	memcpy((void *) get_kernel_stack_top(newp->main_thread->stack_slotID) - THREAD_STACK_SIZE,
++	       (void *) get_kernel_stack_top(parent->main_thread->stack_slotID) - THREAD_STACK_SIZE, THREAD_STACK_SIZE);
++
++	/*
++	 * Preserve the current value of all registers concerned by this execution so that
++	 * the new thread will be able to pursue its execution once scheduled.
++	 */
++
++	__save_context(newp->main_thread, get_kernel_stack_top(newp->main_thread->stack_slotID));
++
++	/* The main process thread is ready to be scheduled for its execution.*/
++	newp->state = PROC_STATE_READY;
++	
++	BUG_ON(!local_irq_is_disabled());
++
++	/* Prepare to perform scheduling to check if a context switch is required. */
++	raise_softirq(SCHEDULE_SOFTIRQ);
++
++	local_irq_restore(flags);
++
++	printk("fork2(): process %s with pid %d forked to child with pid %d\n", parent->name, parent->pid, newp->pid);
++
++	/* Return the PID of the child process. The child will do not execute this code, since
++	 * it jumps to the ret_from_fork in context.S
++	 */
++
++	return newp->pid;
++}
++
+ /*
+  * Terminates a process.
+  * All allocated resources should be released except its PCB which still contains the exit code.
+diff --git a/so3/kernel/syscalls.c b/so3/kernel/syscalls.c
+index 86055fb..3282c74 100644
+--- a/so3/kernel/syscalls.c
++++ b/so3/kernel/syscalls.c
+@@ -111,6 +111,10 @@ long syscall_handle(unsigned long r0, unsigned long r1, unsigned long r2, unsign
+ 			result = do_fork();
+ 			break;
+ 
++		case SYSCALL_FORK2:
++			result = do_fork2();
++			break;
++
+ 		case SYSCALL_WAITPID:
+ 			result = do_waitpid(r0, (uint32_t *) r1, r2);
+ 			break;
+diff --git a/usr/host/count.c b/usr/host/count.c
+index 45286ed..ed1b5a9 100644
+--- a/usr/host/count.c
++++ b/usr/host/count.c
+@@ -6,7 +6,7 @@
+ int main(int argc, char **argv) {
+     int id;
+     size_t i;
+-
++    
+     if (argc != 2) {
+         fprintf(stderr, "Usage: %s <id>\n", argv[0]);
+         return EXIT_FAILURE;
+diff --git a/usr/host/count_parallel.c b/usr/host/count_parallel.c
+index d5b77ac..9bfdff4 100644
+--- a/usr/host/count_parallel.c
++++ b/usr/host/count_parallel.c
+@@ -5,8 +5,43 @@
+ #include <sys/wait.h>
+ #include <unistd.h>
+ 
++#define CHILDREN_LIMIT 15
++#define CHILDREN_LIMIT_DIGITS 2
++
+ int main(int argc, char **argv) {
+-    // TO COMPLETE
++    
++    
++    char currentChildId[CHILDREN_LIMIT_DIGITS + 1]; // "+ 1" pour \0
++    pid_t childrenPid[CHILDREN_LIMIT];
++
++    if (argc != 3) {
++        fprintf(stderr, "Usage: %s <threads> <mode>\n", argv[0]);
++        return EXIT_FAILURE;
++    }
++
++    size_t number;  
++    sscanf(argv[1], "%zu", &number);
++    number = number > CHILDREN_LIMIT ? CHILDREN_LIMIT : number;
++
++    for(size_t i = 0; i < number; ++i) {
++    
++        childrenPid[i] = fork();
++
++        if(childrenPid[i] == 0) {
++            
++            sprintf(currentChildId, "%zu", i); 
++            execl("./count.elf", "./count.elf", currentChildId, NULL);
++        }
++        else if(childrenPid[i] > 0 && strcmp(argv[2], "s") == 0) {
++            waitpid(childrenPid[i], NULL, 0);  
++        }
++    }
++
++    if(strcmp(argv[2], "p") == 0) {
++        for(size_t i = 0; i < number; ++i) {
++            waitpid(childrenPid[i], NULL, 0);  
++        }
++    }
+ 
+     return EXIT_SUCCESS;
+ }
+diff --git a/usr/lib/libc/crt0.S b/usr/lib/libc/crt0.S
+index 6c2e1ad..292e5bb 100755
+--- a/usr/lib/libc/crt0.S
++++ b/usr/lib/libc/crt0.S
+@@ -120,6 +120,7 @@ SYSCALLSTUB sys_execve,			syscallExecve
+ SYSCALLSTUB sys_waitpid,		syscallWaitpid
+ SYSCALLSTUB sys_pause, 			syscallPause
+ SYSCALLSTUB sys_fork, 			syscallFork
++SYSCALLSTUB sys_fork2, 			syscallFork2
+ SYSCALLSTUB sys_readdir, 		syscallReaddir
+ SYSCALLSTUB sys_chdir, 			syscallChdir
+ SYSCALLSTUB sys_getcwd, 		syscallGetcwd
+diff --git a/usr/lib/libc/include/syscall.h b/usr/lib/libc/include/syscall.h
+index 94f44d5..3c1027c 100644
+--- a/usr/lib/libc/include/syscall.h
++++ b/usr/lib/libc/include/syscall.h
+@@ -89,6 +89,7 @@
+ #define syscallNanosleep		70
+ 
+ #define syscallProcname			80
++#define syscallFork2 		    88
+ #define syscallSysinfo			99
+ 
+ #define syscallSetsockopt		110
+diff --git a/usr/src/count_parallel.c b/usr/src/count_parallel.c
+index d222262..414b72b 100644
+--- a/usr/src/count_parallel.c
++++ b/usr/src/count_parallel.c
+@@ -6,7 +6,11 @@
+ #include <unistd.h>
+ 
+ int main(int argc, char **argv) {
+-    // TO COMPLETE
++    
++    for(size_t i = 0; i < argv[1]; ++i) {
++        
++        
++    }
+ 
+     return EXIT_SUCCESS;
+ }
+diff --git a/usr/src/tictactoe_gm.c b/usr/src/tictactoe_gm.c
+index 2f8ff9a..4c6bb45 100644
+--- a/usr/src/tictactoe_gm.c
++++ b/usr/src/tictactoe_gm.c
+@@ -149,11 +149,42 @@ static void draw_grid(void) {
+  *
+  * @returns STATE_WIN if one of the two players has won the game, STATE_DRAW if the grid is full and there is no winner,
+  *          STATE_PROGRESS otherwise.
++ * 
++ *  Taken from this site http://www.cprogrammingnotes.com/question/tic-tac-toe-game.html. Only used for the winning part
+  */
+ static int win(void) {
+     // TO COMPLETE
+ 
+-    return 0;
++    if ((game.grid[0] == PLAYER_ID || game.grid[0] == AI_ID) && game.grid[0] == game.grid[1] && game.grid[1] == game.grid[2])
++        return STATE_WIN;
++        
++    else if ((game.grid[3] == PLAYER_ID || game.grid[3] == AI_ID) && game.grid[3] == game.grid[4] && game.grid[4] == game.grid[5])
++        return STATE_WIN;
++        
++    else if ((game.grid[6] == PLAYER_ID || game.grid[6] == AI_ID) && game.grid[6] == game.grid[7] && game.grid[7] == game.grid[8])
++        return STATE_WIN;
++        
++    else if ((game.grid[0] == PLAYER_ID || game.grid[0] == AI_ID) && game.grid[0] == game.grid[3] && game.grid[3] == game.grid[6])
++        return STATE_WIN;
++        
++    else if ((game.grid[1] == PLAYER_ID || game.grid[1] == AI_ID) && game.grid[1] == game.grid[4] && game.grid[4] == game.grid[7])
++        return STATE_WIN;
++        
++    else if ((game.grid[2] == PLAYER_ID || game.grid[2] == AI_ID) && game.grid[2] == game.grid[5] && game.grid[5] == game.grid[8])
++        return STATE_WIN;
++        
++    else if ((game.grid[0] == PLAYER_ID || game.grid[0] == AI_ID) && game.grid[0] == game.grid[4] && game.grid[4] == game.grid[8])
++        return STATE_WIN;
++        
++    else if ((game.grid[2ll] == PLAYER_ID || game.grid[2] == AI_ID) && game.grid[2] == game.grid[4] && game.grid[4] == game.grid[6])
++        return STATE_WIN;
++
++    for(size_t i = 0; i < GRID_SIZE; ++i) {
++        if(game.grid[i] == EMPTY_ID)
++            return STATE_PROGRESS;
++    }
++
++    return STATE_DRAW;
+ }
+ 
+ /**
+@@ -161,6 +192,13 @@ static int win(void) {
+  */
+ static void init_game(void) {
+     // TO COMPLETE
++    game.over = 0;
++    for(size_t i = 0; i < GRID_SIZE; ++i) {
++        game.grid[i] = EMPTY_ID;
++    }
++    printf("Initial board:\n");
++    draw_grid();
++    printf("The valid moves are 1-9.\n\n");
+ }
+ 
+ /**
+@@ -256,6 +294,7 @@ static void game_manager(void) {
+ 
+     while (!game.over) {
+         if (player == PLAYER_ID) {
++
+             displayBeginPlayersTurn();
+ 
+             // Ask for player's move
+@@ -294,14 +333,41 @@ static void game_manager(void) {
+  * @brief   Main function
+  */
+ int main(int argc, char **argv) {
+-    // TO COMPLETE
+ 
+-    // Initialize Inter-Process Communication library
+-    ipc_init();   // DON'T REMOVE
++char line[MAX_BUFFER_LENGTH];
+ 
+-    // TO COMPLETE
++    do {
++        //TO COMPLETE
++        init_game();
++
++        // Initialize Inter-Process Communication library
++        ipc_init();   // DON'T REMOVE
++        
++
++        // TO COMPLETE
++
++        int pid = sys_fork2();
++
++        if(pid == 0) {
++
++            char argv1[MAX_BUFFER_LENGTH];
++            sprintf(argv1, "%d", ipc_player_argv1()); 
++            char argv2[MAX_BUFFER_LENGTH];
++            sprintf(argv2, "%d", ipc_player_argv2()); 
++
++            execl("./tictactoe_player.elf", "./tictactoe_player.elf", argv1, argv2, (char*) NULL);
++        } else {
++
++            game_manager();
++            waitpid(pid, NULL, 0);
++        }
++        
++        ipc_close();    // DON'T REMOVE
++
++        
+ 
+-    ipc_close();    // DON'T REMOVE
++        scanf("%s", line);
+ 
++    } while(!strcmp(line, "Y"));
+     return 0;
+ }
+diff --git a/usr/src/tictactoe_player.c b/usr/src/tictactoe_player.c
+index 5c24265..8238a32 100644
+--- a/usr/src/tictactoe_player.c
++++ b/usr/src/tictactoe_player.c
+@@ -66,6 +66,8 @@ static int parse_line(char *str, int *index) {
+  */
+ static void displayTictactoePrompt(void) {
+     // TO COMPLETE
++    printf("tictactoe%% ");
++    fflush(stdout);
+ }
+ 
+ /**
+@@ -73,6 +75,8 @@ static void displayTictactoePrompt(void) {
+  */
+ static void displayWinner(void) {
+     // TO COMPLETE
++    printf("YOU WIN! New game (Y/N) ? ");
++    fflush(stdout);
+ }
+ 
+ /**
+@@ -80,6 +84,8 @@ static void displayWinner(void) {
+  */
+ static void displayLooser(void) {
+     // TO COMPLETE
++    printf("YOU LOSE! New game (Y/N) ? ");
++    fflush(stdout);
+ }
+ 
+ /**
+@@ -87,8 +93,22 @@ static void displayLooser(void) {
+  */
+ static int get_input_move(void) {
+     // TO COMPLETE
+-
+-    return 0;
++    char line[MAX_BUFFER_LENGTH];
++    int move;
++    int isDone = 0;
++
++    do {
++        displayTictactoePrompt();
++        scanf("%s", line);
++        isDone = parse_line(line, &move);
++
++        if(!isDone)
++            printf("Invalid!\n");
++            fflush(stdout);
++
++    } while(isDone != 1);
++    
++    return move;
+ }
+ 
+ /**

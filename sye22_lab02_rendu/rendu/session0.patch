@@ -1,0 +1,158 @@
+diff --git a/rapport_lab02.md b/rapport_lab02.md
+index e69de29..a6f8032 100644
+--- a/rapport_lab02.md
++++ b/rapport_lab02.md
+@@ -0,0 +1,6 @@
++syscall.h --> Ajout du no. de syscall
++syscall.c --> Ajout dans le switch du cas où on fait l'appel à fork2
++process.h --> Ajout de la déclaration de do_fork2
++process.c --> Ajout de	printk("fork2(): process %s with pid %d forked to child with pid %d\n",parent->name ,parent->pid, newp->pid);
++crt0.S    --> Ajout du lien entre SYSCALLSTUB sys_fork2, syscallFork2
++syscall.h --> Ajout du no.
+\ No newline at end of file
+diff --git a/so3/include/process.h b/so3/include/process.h
+index dd9d656..8a814dc 100644
+--- a/so3/include/process.h
++++ b/so3/include/process.h
+@@ -138,6 +138,7 @@ uint32_t do_getpid(void);
+ 
+ int do_execve(const char *filename, char **argv, char **envp);
+ int do_fork(void);
++int do_fork2(void);
+ void do_exit(int exit_status);
+ int do_waitpid(int pid, uint32_t *wstatus, uint32_t options);
+ 
+diff --git a/so3/include/syscall.h b/so3/include/syscall.h
+index b81fd96..df56901 100644
+--- a/so3/include/syscall.h
++++ b/so3/include/syscall.h
+@@ -84,6 +84,8 @@
+ 
+ #define SYSCALL_PROCNAME	80
+ 
++#define SYSCALL_FORK2 		88
++
+ #define SYSCALL_SYSINFO		99
+ 
+ #define SYSCALL_SETSOCKOPT	110
+diff --git a/so3/kernel/process.c b/so3/kernel/process.c
+index f404beb..69d7022 100644
+--- a/so3/kernel/process.c
++++ b/so3/kernel/process.c
+@@ -839,6 +839,63 @@ int do_fork(void)
+ 	return newp->pid;
+ }
+ 
++int do_fork2(void)
++{
++	pcb_t *newp, *parent;
++	unsigned long flags;
++
++	flags = local_irq_save();
++
++	parent = current()->pcb;
++
++	/* For the time being, we *only* authorize to fork() from the main thread */
++	if (current() != parent->main_thread) {
++		printk("%s: forking from a thread other than the main thread is not allowed so far ...\n", __func__);
++		return -1;
++	}
++	
++	/* Duplicate the elements of the parent process into the child */
++	newp = duplicate_process(parent);
++
++	/* Copy the user space area of the parent process */
++	duplicate_user_space(parent, newp);
++
++	/* At the moment, we spawn the main_thread only in the child. In the future, we will have to create a thread for each existing threads
++	 * in the parent process.
++	 */
++	sprintf(newp->name, "%s_child_%d", parent->name, newp->pid);
++
++	newp->main_thread = user_thread(NULL, newp->name, (void *) arch_get_args_base(), newp);
++
++	/* Copy the kernel stack of the main thread */
++	memcpy((void *) get_kernel_stack_top(newp->main_thread->stack_slotID) - THREAD_STACK_SIZE,
++	       (void *) get_kernel_stack_top(parent->main_thread->stack_slotID) - THREAD_STACK_SIZE, THREAD_STACK_SIZE);
++
++	/*
++	 * Preserve the current value of all registers concerned by this execution so that
++	 * the new thread will be able to pursue its execution once scheduled.
++	 */
++
++	__save_context(newp->main_thread, get_kernel_stack_top(newp->main_thread->stack_slotID));
++
++	/* The main process thread is ready to be scheduled for its execution.*/
++	newp->state = PROC_STATE_READY;
++	
++	BUG_ON(!local_irq_is_disabled());
++
++	/* Prepare to perform scheduling to check if a context switch is required. */
++	raise_softirq(SCHEDULE_SOFTIRQ);
++
++	local_irq_restore(flags);
++
++	printk("fork2(): process %s with pid %d forked to child with pid %d\n",parent->name ,parent->pid, newp->pid);
++
++	/* Return the PID of the child process. The child will do not execute this code, since
++	 * it jumps to the ret_from_fork in context.S
++	 */
++	return newp->pid;
++}
++
+ /*
+  * Terminates a process.
+  * All allocated resources should be released except its PCB which still contains the exit code.
+diff --git a/so3/kernel/syscalls.c b/so3/kernel/syscalls.c
+index 86055fb..2010e7b 100644
+--- a/so3/kernel/syscalls.c
++++ b/so3/kernel/syscalls.c
+@@ -110,6 +110,10 @@ long syscall_handle(unsigned long r0, unsigned long r1, unsigned long r2, unsign
+ 		case SYSCALL_FORK:
+ 			result = do_fork();
+ 			break;
++			
++		case SYSCALL_FORK2:
++			result = do_fork2();
++			break;
+ 
+ 		case SYSCALL_WAITPID:
+ 			result = do_waitpid(r0, (uint32_t *) r1, r2);
+diff --git a/usr/lib/libc/crt0.S b/usr/lib/libc/crt0.S
+index 6c2e1ad..bafc27f 100755
+--- a/usr/lib/libc/crt0.S
++++ b/usr/lib/libc/crt0.S
+@@ -110,7 +110,6 @@ __start:
+ 
+ #endif /* __ARM64__ */
+ 
+-
+ /* Syscalls stubs */
+ SYSCALLSTUB sys_halt, 			syscallHalt
+ SYSCALLSTUB sys_write,			syscallWrite
+@@ -120,6 +119,7 @@ SYSCALLSTUB sys_execve,			syscallExecve
+ SYSCALLSTUB sys_waitpid,		syscallWaitpid
+ SYSCALLSTUB sys_pause, 			syscallPause
+ SYSCALLSTUB sys_fork, 			syscallFork
++SYSCALLSTUB sys_fork2, 			syscallFork2
+ SYSCALLSTUB sys_readdir, 		syscallReaddir
+ SYSCALLSTUB sys_chdir, 			syscallChdir
+ SYSCALLSTUB sys_getcwd, 		syscallGetcwd
+diff --git a/usr/lib/libc/include/syscall.h b/usr/lib/libc/include/syscall.h
+index 94f44d5..9f6cdc4 100644
+--- a/usr/lib/libc/include/syscall.h
++++ b/usr/lib/libc/include/syscall.h
+@@ -89,11 +89,13 @@
+ #define syscallNanosleep		70
+ 
+ #define syscallProcname			80
++#define syscallFork2	 		88
+ #define syscallSysinfo			99
+ 
+ #define syscallSetsockopt		110
+ #define syscallRecvfrom			111
+ 
++
+ #define SYSINFO_DUMP_HEAP	0
+ #define SYSINFO_DUMP_SCHED	1
+ #define SYSINFO_TEST_MALLOC	2
